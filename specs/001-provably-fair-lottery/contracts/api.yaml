@@ -1,0 +1,1503 @@
+openapi: 3.0.3
+info:
+  title: Provably-Fair Lottery Platform API
+  description: |
+    REST API for a lottery platform with OTP authentication, COD payments, and provably-fair draws using Merkle trees and public randomness beacons.
+
+    **Key Features**:
+    - Passwordless OTP authentication (SMS/Email)
+    - 2-3 tap ticket purchase flow with COD
+    - Public verification of draw results (Merkle + Beacon)
+    - Multi-role admin panel (Super Admin, Ops Manager, Support Agent, Auditor)
+    - Immutable audit trails
+
+    **Supported Languages**: EN (English), BN (Bengali)
+  version: 1.0.0
+  contact:
+    name: API Support
+    email: support@lottery-platform.example
+servers:
+  - url: https://api.lottery-platform.example/v1
+    description: Production server
+  - url: https://api-staging.lottery-platform.example/v1
+    description: Staging server
+  - url: http://localhost:3000/v1
+    description: Local development server
+
+tags:
+  - name: Auth
+    description: OTP authentication endpoints
+  - name: Users
+    description: User profile and address management
+  - name: Draws
+    description: Draw listings and details (public + admin)
+  - name: Orders
+    description: Ticket purchase and order management
+  - name: Tickets
+    description: User ticket viewing and status
+  - name: Verification
+    description: Public fairness verification endpoints
+  - name: Admin - Draws
+    description: Admin draw lifecycle management
+  - name: Admin - Orders
+    description: Admin order search and COD management
+  - name: Admin - Users
+    description: Admin user management and banning
+  - name: Admin - Audit
+    description: Audit log viewing and reporting
+  - name: Admin - Reports
+    description: Sales, COD, fairness, and abuse reports
+
+paths:
+  # ========================================
+  # AUTH ENDPOINTS (Public)
+  # ========================================
+  /auth/otp/request:
+    post:
+      tags: [Auth]
+      summary: Request OTP code
+      description: Send OTP to user's phone or email for passwordless authentication. Rate limited to 3 requests per hour per phone/email/IP.
+      operationId: requestOTP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier]
+              properties:
+                identifier:
+                  type: string
+                  description: Phone (E.164 format, e.g., +8801712345678) or email
+                  example: "+8801712345678"
+                language:
+                  type: string
+                  enum: [en, bn]
+                  default: en
+                  description: Preferred language for OTP message
+      responses:
+        '200':
+          description: OTP sent successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_id:
+                    type: string
+                    format: uuid
+                    description: Session ID for OTP verification
+                  expires_at:
+                    type: string
+                    format: date-time
+                    description: OTP expiry time (10 minutes from now)
+                  message:
+                    type: string
+                    example: "OTP sent to +880*******5678"
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+
+  /auth/otp/verify:
+    post:
+      tags: [Auth]
+      summary: Verify OTP code
+      description: Verify OTP and authenticate user. Creates new user if phone/email not found. Returns JWT token on success.
+      operationId: verifyOTP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [session_id, otp_code]
+              properties:
+                session_id:
+                  type: string
+                  format: uuid
+                  description: Session ID from /auth/otp/request
+                otp_code:
+                  type: string
+                  pattern: '^\d{6}$'
+                  description: 6-digit OTP code
+                  example: "123456"
+                device_fingerprint:
+                  type: string
+                  description: Browser fingerprint for fraud detection
+                  example: "fp_abc123xyz"
+      responses:
+        '200':
+          description: Authentication successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                    description: JWT access token (expires in 7 days)
+                    example: "eyJhbGciOiJIUzI1NiIs..."
+                  user:
+                    $ref: '#/components/schemas/User'
+                  is_new_user:
+                    type: boolean
+                    description: Whether this is a newly created user
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+
+  # ========================================
+  # USER ENDPOINTS (Authenticated)
+  # ========================================
+  /users/me:
+    get:
+      tags: [Users]
+      summary: Get current user profile
+      security: [BearerAuth: []]
+      responses:
+        '200':
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+    patch:
+      tags: [Users]
+      summary: Update user profile
+      security: [BearerAuth: []]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                language:
+                  type: string
+                  enum: [en, bn]
+      responses:
+        '200':
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+
+  /users/me/addresses:
+    get:
+      tags: [Users]
+      summary: List user addresses
+      security: [BearerAuth: []]
+      responses:
+        '200':
+          description: Address list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Address'
+    post:
+      tags: [Users]
+      summary: Add new address
+      security: [BearerAuth: []]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddressInput'
+      responses:
+        '201':
+          description: Address created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Address'
+
+  # ========================================
+  # DRAW ENDPOINTS (Public)
+  # ========================================
+  /draws:
+    get:
+      tags: [Draws]
+      summary: List draws
+      description: Public endpoint to list draws filtered by status. No auth required for browsing.
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [started, closed, settled]
+          description: Filter by draw status (default: started)
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Draw list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Draw'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+
+  /draws/{draw_id}:
+    get:
+      tags: [Draws]
+      summary: Get draw details
+      parameters:
+        - $ref: '#/components/parameters/DrawId'
+      responses:
+        '200':
+          description: Draw details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Draw'
+
+  # ========================================
+  # ORDER ENDPOINTS (Authenticated)
+  # ========================================
+  /orders:
+    post:
+      tags: [Orders]
+      summary: Create order (Quick Buy)
+      description: Reserve tickets for COD payment. This is the core 2-3 tap purchase flow.
+      security: [BearerAuth: []]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [draw_id, quantity, address_id]
+              properties:
+                draw_id:
+                  type: string
+                  format: uuid
+                quantity:
+                  type: integer
+                  minimum: 1
+                  maximum: 10
+                  description: Number of tickets to purchase
+                address_id:
+                  type: string
+                  format: uuid
+                  description: Delivery address for COD
+      responses:
+        '201':
+          description: Order created, tickets reserved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '403':
+          description: User is banned from purchasing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: "forbidden"
+                message: "You are temporarily restricted from purchasing tickets. Please contact support."
+
+    get:
+      tags: [Orders]
+      summary: List user orders
+      security: [BearerAuth: []]
+      parameters:
+        - name: draw_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter by draw
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, assigned, collected, failed, canceled]
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Order list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Order'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+
+  /orders/{order_id}:
+    get:
+      tags: [Orders]
+      summary: Get order details
+      security: [BearerAuth: []]
+      parameters:
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: Order details with tickets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderWithTickets'
+
+  # ========================================
+  # TICKET ENDPOINTS (Authenticated)
+  # ========================================
+  /tickets:
+    get:
+      tags: [Tickets]
+      summary: List user tickets
+      security: [BearerAuth: []]
+      parameters:
+        - name: draw_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter by draw
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [reserved, paid, expired, entered]
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: Ticket list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Ticket'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+
+  # ========================================
+  # VERIFICATION ENDPOINTS (Public)
+  # ========================================
+  /verify/{draw_id}:
+    get:
+      tags: [Verification]
+      summary: Get draw fairness data
+      description: Public endpoint for verifying draw results. Returns merkle root, beacon value, total tickets, and winner. Anyone can recompute winner client-side.
+      parameters:
+        - $ref: '#/components/parameters/DrawId'
+      responses:
+        '200':
+          description: Fairness verification data
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [draw_id, status, merkle_root, beacon_source, beacon_value, total_paid_tickets, winner]
+                properties:
+                  draw_id:
+                    type: string
+                    format: uuid
+                  title:
+                    type: string
+                    example: "Weekly Draw #1"
+                  status:
+                    type: string
+                    enum: [settled]
+                  merkle_root:
+                    type: string
+                    pattern: '^[a-f0-9]{64}$'
+                    example: "a1b2c3d4e5f6..."
+                    description: Hex-encoded merkle root (64 chars)
+                  beacon_source:
+                    type: string
+                    enum: [bitcoin, drand]
+                  beacon_value:
+                    type: string
+                    example: "00000000000000000003abc..."
+                    description: Hex-encoded beacon value
+                  beacon_url:
+                    type: string
+                    format: uri
+                    example: "https://blockchain.info/block-height/850000"
+                    description: Link to public beacon explorer
+                  total_paid_tickets:
+                    type: integer
+                    example: 1234
+                  winner:
+                    type: object
+                    properties:
+                      ticket_serial:
+                        type: integer
+                        example: 790
+                      ticket_id:
+                        type: string
+                        format: uuid
+                      user_id:
+                        type: string
+                        format: uuid
+                  formula:
+                    type: string
+                    example: "hash = SHA256(beacon || merkle_root); winner_index = bigint(hash) % total_paid_tickets"
+                    description: Winner calculation formula
+                  fairness_events:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        event_type:
+                          type: string
+                          enum: [MERKLE_PUBLISHED, BEACON_FETCHED, WINNER_COMPUTED]
+                        created_at:
+                          type: string
+                          format: date-time
+                  archive_url:
+                    type: string
+                    format: uri
+                    description: Link to immutable audit bundle (S3)
+                    example: "https://s3.example.com/fairness-bundles/draw-123.json"
+
+  # ========================================
+  # ADMIN - DRAW ENDPOINTS
+  # ========================================
+  /admin/draws:
+    post:
+      tags: [Admin - Draws]
+      summary: Create new draw
+      security: [BearerAuth: [admin.draws.create]]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DrawInput'
+      responses:
+        '201':
+          description: Draw created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Draw'
+
+  /admin/draws/{draw_id}/close:
+    post:
+      tags: [Admin - Draws]
+      summary: Manually close draw
+      description: Closes draw before scheduled end_at. Triggers merkle build job.
+      security: [BearerAuth: [admin.draws.close]]
+      parameters:
+        - $ref: '#/components/parameters/DrawId'
+      responses:
+        '200':
+          description: Draw closed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Draw'
+
+  /admin/draws/{draw_id}/settle:
+    post:
+      tags: [Admin - Draws]
+      summary: Manually trigger settlement
+      description: Fetches beacon and computes winner. Normally triggered by background job.
+      security: [BearerAuth: [admin.draws.settle]]
+      parameters:
+        - $ref: '#/components/parameters/DrawId'
+      responses:
+        '200':
+          description: Draw settled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Draw'
+
+  # ========================================
+  # ADMIN - ORDER ENDPOINTS
+  # ========================================
+  /admin/orders:
+    get:
+      tags: [Admin - Orders]
+      summary: Search orders
+      security: [BearerAuth: [admin.orders.read]]
+      parameters:
+        - name: user_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: draw_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, assigned, collected, failed, canceled]
+        - name: from_date
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: to_date
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: Order search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OrderWithUser'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+
+  /admin/orders/{order_id}:
+    patch:
+      tags: [Admin - Orders]
+      summary: Update order (COD status override)
+      description: Allows admin to manually mark order as collected, failed, or canceled with reason. Logged in audit trail.
+      security: [BearerAuth: [admin.orders.update]]
+      parameters:
+        - $ref: '#/components/parameters/OrderId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status, reason]
+              properties:
+                status:
+                  type: string
+                  enum: [collected, failed, canceled]
+                reason:
+                  type: string
+                  minLength: 10
+                  maxLength: 500
+                  description: Required reason for admin override
+      responses:
+        '200':
+          description: Order updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+
+  # ========================================
+  # ADMIN - USER ENDPOINTS
+  # ========================================
+  /admin/users:
+    get:
+      tags: [Admin - Users]
+      summary: Search users
+      security: [BearerAuth: [admin.users.read]]
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+          description: Search by phone, email, or name
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, soft_banned, hard_banned]
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: User search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/UserWithStats'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+
+  /admin/users/{user_id}:
+    get:
+      tags: [Admin - Users]
+      summary: Get user details
+      description: Full user profile with order history, tickets, bans, devices, IPs, flags.
+      security: [BearerAuth: [admin.users.read]]
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: User details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserDetail'
+
+  /admin/users/{user_id}/ban:
+    post:
+      tags: [Admin - Users]
+      summary: Ban user
+      description: Apply soft ban (block purchase) or hard ban (block login) with required reason. Logged in audit trail.
+      security: [BearerAuth: [admin.users.ban]]
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, reason]
+              properties:
+                type:
+                  type: string
+                  enum: [soft, hard]
+                reason:
+                  type: string
+                  minLength: 10
+                  maxLength: 500
+                expires_at:
+                  type: string
+                  format: date-time
+                  description: Optional expiry time (null = permanent)
+      responses:
+        '200':
+          description: Ban applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ban'
+
+  # ========================================
+  # ADMIN - AUDIT ENDPOINTS
+  # ========================================
+  /admin/audit:
+    get:
+      tags: [Admin - Audit]
+      summary: List audit logs
+      security: [BearerAuth: [admin.audit.read]]
+      parameters:
+        - name: actor_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter by admin who performed action
+        - name: action_type
+          in: query
+          schema:
+            type: string
+          description: Filter by action type (e.g., user_banned, draw_closed)
+        - name: entity_type
+          in: query
+          schema:
+            type: string
+            enum: [user, draw, order, ticket, refund, ban, settings]
+        - name: entity_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: from_date
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: to_date
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+      responses:
+        '200':
+          description: Audit log list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditLog'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+
+  # ========================================
+  # ADMIN - REPORT ENDPOINTS
+  # ========================================
+  /admin/reports/sales:
+    get:
+      tags: [Admin - Reports]
+      summary: Sales report
+      description: Sales by draw, daily totals, ticket sell-through rates
+      security: [BearerAuth: [admin.reports.read]]
+      parameters:
+        - name: from_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: to_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: draw_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Sales report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  summary:
+                    type: object
+                    properties:
+                      total_orders:
+                        type: integer
+                      total_tickets_sold:
+                        type: integer
+                      total_revenue:
+                        type: number
+                        format: decimal
+                      avg_tickets_per_order:
+                        type: number
+                        format: float
+                  by_draw:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        draw_id:
+                          type: string
+                          format: uuid
+                        draw_title:
+                          type: string
+                        tickets_sold:
+                          type: integer
+                        max_tickets:
+                          type: integer
+                        sell_through_pct:
+                          type: number
+                          format: float
+                        revenue:
+                          type: number
+                          format: decimal
+
+  /admin/reports/cod:
+    get:
+      tags: [Admin - Reports]
+      summary: COD collection report
+      description: COD collection rates, time-to-collect, failed pickup reasons
+      security: [BearerAuth: [admin.reports.read]]
+      parameters:
+        - name: from_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: to_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: COD report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  summary:
+                    type: object
+                    properties:
+                      total_orders:
+                        type: integer
+                      collected:
+                        type: integer
+                      failed:
+                        type: integer
+                      canceled:
+                        type: integer
+                      collection_rate_pct:
+                        type: number
+                        format: float
+                      avg_time_to_collect_hours:
+                        type: number
+                        format: float
+                  fail_reasons:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        reason:
+                          type: string
+                        count:
+                          type: integer
+
+  /admin/reports/fairness:
+    get:
+      tags: [Admin - Reports]
+      summary: Fairness report
+      description: All draws with merkle roots, beacon sources, winner calculations, timestamps
+      security: [BearerAuth: [admin.reports.read]]
+      parameters:
+        - name: from_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: to_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Fairness report
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    draw_id:
+                      type: string
+                      format: uuid
+                    draw_title:
+                      type: string
+                    status:
+                      type: string
+                    merkle_root:
+                      type: string
+                    merkle_published_at:
+                      type: string
+                      format: date-time
+                    beacon_source:
+                      type: string
+                    beacon_value:
+                      type: string
+                    beacon_fetched_at:
+                      type: string
+                      format: date-time
+                    winner_ticket_serial:
+                      type: integer
+                    winner_computed_at:
+                      type: string
+                      format: date-time
+
+# ========================================
+# COMPONENTS
+# ========================================
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token from /auth/otp/verify endpoint
+
+  parameters:
+    DrawId:
+      name: draw_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Draw UUID
+
+    OrderId:
+      name: order_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Order UUID
+
+    UserId:
+      name: user_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: User UUID
+
+  schemas:
+    User:
+      type: object
+      required: [id, status, language, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        phone:
+          type: string
+          example: "+8801712345678"
+          nullable: true
+        email:
+          type: string
+          format: email
+          nullable: true
+        name:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [active, soft_banned, hard_banned]
+        language:
+          type: string
+          enum: [en, bn]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Address:
+      type: object
+      required: [id, street, city, postal_code, country, phone, is_default]
+      properties:
+        id:
+          type: string
+          format: uuid
+        label:
+          type: string
+          example: "Home"
+          nullable: true
+        street:
+          type: string
+          example: "123 Main St, Apt 4B"
+        city:
+          type: string
+          example: "Dhaka"
+        state:
+          type: string
+          nullable: true
+        postal_code:
+          type: string
+          example: "1205"
+        country:
+          type: string
+          example: "BD"
+        phone:
+          type: string
+          example: "+8801712345678"
+        is_default:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    AddressInput:
+      type: object
+      required: [street, city, postal_code, country, phone]
+      properties:
+        label:
+          type: string
+        street:
+          type: string
+        city:
+          type: string
+        state:
+          type: string
+        postal_code:
+          type: string
+        country:
+          type: string
+        phone:
+          type: string
+        is_default:
+          type: boolean
+
+    Draw:
+      type: object
+      required: [id, title, status, start_at, end_at, ticket_price, max_tickets, tickets_sold]
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          example: "Weekly Draw #1"
+        status:
+          type: string
+          enum: [started, closed, settled]
+        start_at:
+          type: string
+          format: date-time
+        end_at:
+          type: string
+          format: date-time
+        ticket_price:
+          type: number
+          format: decimal
+          example: 10.00
+        max_tickets:
+          type: integer
+          example: 1000
+        tickets_sold:
+          type: integer
+          example: 789
+        tickets_remaining:
+          type: integer
+          example: 211
+        low_sales_threshold_pct:
+          type: integer
+          example: 30
+        beacon_source:
+          type: string
+          enum: [bitcoin, drand]
+        terms_url:
+          type: string
+          format: uri
+        created_at:
+          type: string
+          format: date-time
+        closed_at:
+          type: string
+          format: date-time
+          nullable: true
+        settled_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    DrawInput:
+      type: object
+      required: [title, start_at, end_at, ticket_price, max_tickets, beacon_source, terms_url]
+      properties:
+        title:
+          type: string
+        start_at:
+          type: string
+          format: date-time
+        end_at:
+          type: string
+          format: date-time
+        ticket_price:
+          type: number
+          format: decimal
+        max_tickets:
+          type: integer
+        low_sales_threshold_pct:
+          type: integer
+          minimum: 0
+          maximum: 100
+          default: 30
+        beacon_source:
+          type: string
+          enum: [bitcoin, drand]
+        beacon_rule:
+          type: string
+          description: Optional rule description
+        terms_url:
+          type: string
+          format: uri
+
+    Order:
+      type: object
+      required: [id, user_id, draw_id, quantity, total_amount, status, created_at, expires_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        draw_id:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          example: 3
+        total_amount:
+          type: number
+          format: decimal
+          example: 30.00
+        status:
+          type: string
+          enum: [pending, assigned, collected, failed, canceled]
+        address_id:
+          type: string
+          format: uuid
+        assigned_agent_id:
+          type: string
+          format: uuid
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          description: Reservation expiry (created_at + 6 hours)
+        collected_at:
+          type: string
+          format: date-time
+          nullable: true
+        canceled_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    OrderWithTickets:
+      allOf:
+        - $ref: '#/components/schemas/Order'
+        - type: object
+          properties:
+            tickets:
+              type: array
+              items:
+                $ref: '#/components/schemas/Ticket'
+            address:
+              $ref: '#/components/schemas/Address'
+
+    OrderWithUser:
+      allOf:
+        - $ref: '#/components/schemas/Order'
+        - type: object
+          properties:
+            user:
+              type: object
+              properties:
+                id:
+                  type: string
+                  format: uuid
+                name:
+                  type: string
+                phone:
+                  type: string
+
+    Ticket:
+      type: object
+      required: [id, draw_id, order_id, user_id, serial, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        draw_id:
+          type: string
+          format: uuid
+        order_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        serial:
+          type: integer
+          example: 1
+          description: Sequential ticket number within draw
+        status:
+          type: string
+          enum: [reserved, paid, expired, entered]
+        created_at:
+          type: string
+          format: date-time
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+        expired_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    Ban:
+      type: object
+      required: [id, user_id, type, reason, created_by, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [soft, hard]
+        reason:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_by:
+          type: string
+          format: uuid
+          description: Admin user ID
+        created_at:
+          type: string
+          format: date-time
+        lifted_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    AuditLog:
+      type: object
+      required: [id, actor_id, actor_role, action_type, entity_type, payload_hash, ip_address, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        actor_id:
+          type: string
+          format: uuid
+        actor_role:
+          type: string
+          example: "Super Admin"
+        action_type:
+          type: string
+          example: "user_banned"
+        entity_type:
+          type: string
+          enum: [user, draw, order, ticket, refund, ban, settings]
+        entity_id:
+          type: string
+          format: uuid
+          nullable: true
+        diff_summary:
+          type: string
+          example: "Applied soft ban until 2025-11-12. Reason: Repeated failed COD pickups."
+          nullable: true
+        payload_hash:
+          type: string
+          example: "abc123..."
+        ip_address:
+          type: string
+          example: "192.168.1.1"
+        created_at:
+          type: string
+          format: date-time
+
+    UserWithStats:
+      allOf:
+        - $ref: '#/components/schemas/User'
+        - type: object
+          properties:
+            total_orders:
+              type: integer
+            total_tickets:
+              type: integer
+            failed_cod_count:
+              type: integer
+
+    UserDetail:
+      allOf:
+        - $ref: '#/components/schemas/User'
+        - type: object
+          properties:
+            orders:
+              type: array
+              items:
+                $ref: '#/components/schemas/Order'
+            tickets:
+              type: array
+              items:
+                $ref: '#/components/schemas/Ticket'
+            bans:
+              type: array
+              items:
+                $ref: '#/components/schemas/Ban'
+            devices:
+              type: array
+              items:
+                type: string
+            ip_addresses:
+              type: array
+              items:
+                type: string
+            flags:
+              type: array
+              items:
+                type: string
+                enum: [spam, duplicate, chargeback, suspicious, cod_risk]
+
+    Pagination:
+      type: object
+      required: [page, limit, total, total_pages]
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        total:
+          type: integer
+        total_pages:
+          type: integer
+
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          example: "bad_request"
+        message:
+          type: string
+          example: "Validation failed"
+        details:
+          type: object
+          nullable: true
+
+  responses:
+    BadRequestError:
+      description: Bad request - validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "bad_request"
+            message: "Validation failed"
+            details:
+              quantity: "must be between 1 and 10"
+
+    UnauthorizedError:
+      description: Unauthorized - invalid or expired token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "unauthorized"
+            message: "Invalid OTP code"
+
+    ForbiddenError:
+      description: Forbidden - insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "forbidden"
+            message: "Insufficient permissions"
+
+    NotFoundError:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "not_found"
+            message: "Draw not found"
+
+    RateLimitError:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "rate_limit"
+            message: "Too many OTP requests. Please try again in 30 minutes."

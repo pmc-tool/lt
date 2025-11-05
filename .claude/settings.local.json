@@ -1,8 +1,24 @@
 {
   "permissions": {
     "allow": [
-      "Bash(curl:*)",
-      "Bash(sh)"
+      "Bash(.specify/scripts/bash/setup-plan.sh:*)",
+      "Bash(.specify/scripts/bash/update-agent-context.sh:*)",
+      "Bash(.specify/scripts/bash/check-prerequisites.sh:*)",
+      "Bash(if [ -d \"/Users/nowshidalamsayem/Downloads/lottery/specs/001-provably-fair-lottery/checklists\" ])",
+      "Bash(then find \"/Users/nowshidalamsayem/Downloads/lottery/specs/001-provably-fair-lottery/checklists\" -name \"*.md\" -type f)",
+      "Bash(else echo \"NO_CHECKLISTS\")",
+      "Bash(fi)",
+      "Bash(git rev-parse:*)",
+      "Bash([ -f .gitignore ])",
+      "Bash(npm init:*)",
+      "Bash(npm install:*)",
+      "Bash(npx tailwindcss:*)",
+      "Bash(npm run build:*)",
+      "Bash(docker-compose ps:*)",
+      "Bash(docker compose:*)",
+      "Bash(lsof:*)",
+      "Bash(kill:*)",
+      "Bash(node --version)"
     ],
     "deny": [],
     "ask": []
