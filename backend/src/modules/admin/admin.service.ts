@@ -71,9 +71,12 @@ export class AdminService {
       throw new Error('JWT secret not configured');
     }
 
+    // Use the fixed admin user UUID from database
+    const adminUserId = '00000000-0000-0000-0000-000000000001';
+
     const token = jwt.sign(
       {
-        userId: 'admin',
+        userId: adminUserId,
         role: AdminRole.SUPER_ADMIN,
         email: dto.email,
       },
