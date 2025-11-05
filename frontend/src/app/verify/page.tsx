@@ -17,7 +17,7 @@ export default function VerifyPage() {
 
   const loadSettledDraws = async () => {
     try {
-      const response = await drawsAPI.list({ status: 'SETTLED', limit: 20 });
+      const response = await drawsAPI.list({ status: 'settled', limit: 20 });
       setDraws(response.data || []);
     } catch (err: any) {
       setError(err.message || 'Failed to load draws');

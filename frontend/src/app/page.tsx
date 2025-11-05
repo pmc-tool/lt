@@ -7,7 +7,7 @@ export default async function HomePage() {
   let error = null;
 
   try {
-    const response = await drawsAPI.list({ status: 'STARTED', limit: 10 });
+    const response = await drawsAPI.list({ status: 'started', limit: 10 });
     draws = response.data || [];
   } catch (e: any) {
     error = e.message;

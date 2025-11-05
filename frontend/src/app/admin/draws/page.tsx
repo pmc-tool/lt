@@ -89,10 +89,10 @@ export default function AdminDrawsPage() {
 
   const getStatusBadge = (status: string) => {
     const statusColors: Record<string, string> = {
-      STARTED: 'bg-green-100 text-green-800',
-      CLOSED: 'bg-yellow-100 text-yellow-800',
-      SETTLED: 'bg-blue-100 text-blue-800',
-      ROLLED_OVER: 'bg-purple-100 text-purple-800',
+      started: 'bg-green-100 text-green-800',
+      closed: 'bg-yellow-100 text-yellow-800',
+      settled: 'bg-blue-100 text-blue-800',
+      rolled_over: 'bg-purple-100 text-purple-800',
     };
 
     return (
@@ -154,10 +154,10 @@ export default function AdminDrawsPage() {
             className="rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
           >
             <option value="">All</option>
-            <option value="STARTED">Started</option>
-            <option value="CLOSED">Closed</option>
-            <option value="SETTLED">Settled</option>
-            <option value="ROLLED_OVER">Rolled Over</option>
+            <option value="started">Started</option>
+            <option value="closed">Closed</option>
+            <option value="settled">Settled</option>
+            <option value="rolled_over">Rolled Over</option>
           </select>
         </div>
 
@@ -207,7 +207,7 @@ export default function AdminDrawsPage() {
                       <div className="flex items-center space-x-3">
                         {getStatusBadge(draw.status)}
 
-                        {draw.status === 'STARTED' && (
+                        {draw.status === 'started' && (
                           <button
                             onClick={() => handleCloseDraw(draw.id)}
                             disabled={actionLoading === draw.id}
@@ -217,7 +217,7 @@ export default function AdminDrawsPage() {
                           </button>
                         )}
 
-                        {draw.status === 'CLOSED' && (
+                        {draw.status === 'closed' && (
                           <button
                             onClick={() => handleSettleDraw(draw.id)}
                             disabled={actionLoading === draw.id}

@@ -18,7 +18,7 @@ interface DrawCardProps {
 }
 
 export default function DrawCard({ draw }: DrawCardProps) {
-  const isOpen = draw.status === 'STARTED';
+  const isOpen = draw.status === 'started';
   const sellThroughPct = (draw.tickets_sold / draw.max_tickets) * 100;
   const endsIn = isOpen ? formatDistanceToNow(new Date(draw.end_at), { addSuffix: true }) : null;
 
